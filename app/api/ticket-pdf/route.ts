@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
       locale,
     });
 
-    return new NextResponse(pdfBytes, {
+    return new NextResponse(Buffer.from(pdfBytes), {
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="ticket-${membershipId}.pdf"`,
