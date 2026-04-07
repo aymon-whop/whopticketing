@@ -1,65 +1,235 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+import { useSearchParams } from "next/navigation";
+import { useEffect, useState, useRef, useCallback, Suspense } from "react";
+import QRCode from "qrcode";
+import { useI18n } from "@/lib/i18n-context";
+
+interface TicketData {
+  id: string;
+  email: string;
+  plan: string;
+  created_at: string;
+}
+
+function TicketContent() {
+  const searchParams = useSearchParams();
+  const membershipIdParam = searchParams.get("membership_id");
+  const { t, locale } = useI18n();
+
+  const [ticket, setTicket] = useState<TicketData | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sendingEmail, setSendingEmail] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<"idle" | "sent" | "error">("idle");
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const fetchTicket = useCallback(async (query: string) => {
+    setLoading(true);
+    setError("");
+    setTicket(null);
+
+    try {
+      const res = await fetch(`/api/membership?${query}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Ticket not found");
+      }
+      const data = await res.json();
+      setTicket(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load your ticket.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (membershipIdParam) {
+      fetchTicket(`membership_id=${encodeURIComponent(membershipIdParam)}`);
+    }
+  }, [membershipIdParam, fetchTicket]);
+
+  useEffect(() => {
+    if (ticket && canvasRef.current) {
+      QRCode.toCanvas(canvasRef.current, ticket.id, {
+        width: 280,
+        margin: 2,
+        color: { dark: "#000000", light: "#ffffff" },
+      });
+    }
+  }, [ticket]);
+
+  const handleEmailSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email.trim()) return;
+    fetchTicket(`email=${encodeURIComponent(email.trim())}`);
+  };
+
+  const handleDownloadPdf = useCallback(async () => {
+    if (!ticket) return;
+    setDownloadingPdf(true);
+    try {
+      const res = await fetch(`/api/ticket-pdf?membership_id=${encodeURIComponent(ticket.id)}&locale=${locale}`);
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ticket-${ticket.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Failed to download PDF");
+    } finally {
+      setDownloadingPdf(false);
+    }
+  }, [ticket]);
+
+  const handleSendEmail = useCallback(async () => {
+    if (!ticket) return;
+    setSendingEmail(true);
+    setEmailStatus("idle");
+    try {
+      const res = await fetch("/api/send-ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ membership_id: ticket.id, locale }),
+      });
+      if (!res.ok) throw new Error("Send failed");
+      setEmailStatus("sent");
+    } catch {
+      setEmailStatus("error");
+    } finally {
+      setSendingEmail(false);
+      setTimeout(() => setEmailStatus("idle"), 4000);
+    }
+  }, [ticket]);
+
+  if (ticket) {
+    const dateLocaleStr = locale === "es" ? "es-ES" : "en-US";
+    const purchaseDate = new Date(ticket.created_at).toLocaleDateString(dateLocaleStr, {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-8 max-w-sm w-full text-center">
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <img src="/diekpower-hero.jpg" alt="DiekPower" className="h-10 w-10 rounded-full object-cover" />
+            <span className="font-bold text-gray-900 tracking-tight">DiekPower</span>
+          </div>
+          <h1 className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-1">
+            {t("ticket.yourTicket")}
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+          <h2 className="text-2xl font-bold text-gray-900 mb-6">{ticket.plan}</h2>
+
+          <div className="flex justify-center mb-6">
+            <canvas ref={canvasRef} className="rounded-lg" />
+          </div>
+
+          <div className="space-y-1 mb-6">
+            <p className="text-sm text-gray-500">{ticket.email}</p>
+            <p className="text-sm text-gray-400">
+              {t("ticket.purchased")} {purchaseDate}
+            </p>
+          </div>
+
+          <div className="space-y-3 mb-4">
+            <button
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+              className="w-full bg-gray-900 text-white py-3 px-6 rounded-xl font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              {downloadingPdf ? t("ticket.downloading") : t("ticket.downloadPdf")}
+            </button>
+
+            <button
+              onClick={handleSendEmail}
+              disabled={sendingEmail}
+              className="w-full bg-white text-gray-900 py-3 px-6 rounded-xl font-medium border border-gray-200 hover:bg-gray-50 transition-colors disabled:opacity-50 cursor-pointer"
             >
-              Learning
-            </a>{" "}
-            center.
+              {sendingEmail ? t("ticket.sendingEmail") : t("ticket.sendEmail")}
+            </button>
+          </div>
+
+          {emailStatus === "sent" && (
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-3">
+              <p className="text-green-700 text-sm">{t("ticket.emailSent")}</p>
+            </div>
+          )}
+          {emailStatus === "error" && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3">
+              <p className="text-red-700 text-sm">{t("ticket.emailError")}</p>
+            </div>
+          )}
+
+          <p className="text-xs text-gray-400 mt-2">
+            {t("ticket.showQr")}
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 flex items-center justify-center p-6">
+      <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-8 max-w-sm w-full text-center">
+        <div className="flex items-center justify-center gap-2 mb-4">
+          <img src="/diekpower-hero.jpg" alt="DiekPower" className="h-10 w-10 rounded-full object-cover" />
+          <span className="font-bold text-gray-900 tracking-tight">DiekPower</span>
         </div>
-      </main>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">{t("ticket.title")}</h1>
+        <p className="text-sm text-gray-500 mb-6">
+          {t("ticket.subtitle")}
+        </p>
+
+        <form onSubmit={handleEmailSubmit} className="space-y-4">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder={t("ticket.emailPlaceholder")}
+            required
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-gray-900 text-white py-3 px-6 rounded-xl font-medium hover:bg-gray-800 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {loading ? t("ticket.searching") : t("ticket.findButton")}
+          </button>
+        </form>
+
+        {error && (
+          <div className="mt-4 bg-red-50 border border-red-200 rounded-xl p-4">
+            <p className="text-red-700 text-sm">{error}</p>
+          </div>
+        )}
+
+        <p className="text-xs text-gray-400 mt-6">
+          {t("ticket.footerHint")}
+        </p>
+      </div>
     </div>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-gray-500 text-lg">Loading...</p>
+        </div>
+      }
+    >
+      <TicketContent />
+    </Suspense>
   );
 }
