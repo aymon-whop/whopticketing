@@ -81,31 +81,34 @@ async function fetchByEmail(email: string) {
           return NextResponse.json({ error: "Could not determine company" }, { status: 500 });
         }
 
-        const payUrl = new URL(`${API_BASE}/payments`);
-        payUrl.searchParams.set("company_id", companyId);
         const user = match.user as Record<string, string>;
         const userId = user?.id;
-
-        const payRes = await fetch(payUrl.toString(), { headers });
-        if (!payRes.ok) {
-          return NextResponse.json({ error: "Failed to search payments" }, { status: 500 });
+        if (!userId) {
+          return NextResponse.json({ error: "No ticket found for this email" }, { status: 404 });
         }
-        const payData = await payRes.json();
-        const payments = payData.data as Record<string, unknown>[];
 
-        const payment = payments?.find((p) => {
-          const pUser = p.user as Record<string, string> | undefined;
-          return pUser?.id === userId;
-        });
+        // Look up memberships directly. /payments doesn't work for waitlist-approved
+        // free memberships because they have no payment record.
+        const memUrl = new URL(`${API_BASE}/memberships`);
+        memUrl.searchParams.set("company_id", companyId);
+        memUrl.searchParams.append("user_ids", userId);
 
-        if (payment) {
-          const membership = payment.membership as Record<string, string> | undefined;
-          if (membership?.id) {
-            const memRes = await fetch(`${API_BASE}/memberships/${membership.id}`, { headers });
-            if (memRes.ok) {
-              const memData = await memRes.json();
-              return NextResponse.json(formatMembership(memData));
-            }
+        const memListRes = await fetch(memUrl.toString(), { headers });
+        if (!memListRes.ok) {
+          const body = await memListRes.text();
+          console.error("Whop list memberships error:", memListRes.status, body);
+          return NextResponse.json({ error: "Failed to search memberships" }, { status: 500 });
+        }
+
+        const memListData = await memListRes.json();
+        const memberships = memListData.data as Record<string, unknown>[] | undefined;
+        const membership = memberships?.[0];
+
+        if (membership?.id) {
+          const memRes = await fetch(`${API_BASE}/memberships/${membership.id}`, { headers });
+          if (memRes.ok) {
+            const memData = await memRes.json();
+            return NextResponse.json(formatMembership(memData));
           }
         }
 
